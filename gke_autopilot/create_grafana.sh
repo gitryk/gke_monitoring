@@ -1,15 +1,57 @@
-export GRAFANA_TAG=11.6.0
 #export SQL_REGION=
 #export SQL_INSTANCE=
 
+#DB 시크릿 지정
+kubectl create secret generic ${SVC_PROJECT}-gke-${SVC_NAME}-secret \
+  --from-literal=database=**** \
+  --from-literal=user=**** \
+  --from-literal=password=**** \
+  -n ${K8S_NAMESPACE}
+
+export GRAFANA_TAG=12.0.0
+export ENV=prd
+
 curl -s https://raw.githubusercontent.com/GoogleCloudPlatform/prometheus-engine/refs/heads/main/examples/grafana.yaml |
 sed -E "s|(image:\s*grafana/grafana:).*|\1${GRAFANA_TAG}|" |
-awk -v svc="${SVC_PROJECT}-gke-${SVC_NAME}" \
-    -v neg="${SVC_PROJECT}-${SVC_NAME}-neg" \
-    -v sql="${SVC_PROJECT}:${SQL_REGION}:${SQL_INSTANCE}" \
-    -v prj="${SVC_PROJECT}" '
+awk -v prj="${SVC_PROJECT}" \
+    -v svc="${SVC_NAME}" \
+    -v sql="${SQL_REGION}:${SQL_INSTANCE}" \
+    -v env="${ENV}" '
 BEGIN {
-  use_sql = (sql != prj "::") ? 1 : 0
+  use_sql = (sql != ":") ? 1 : 0
+}
+
+$0 ~ /^kind:[[:space:]]*Deployment/ {
+  in_deployment = 1
+}
+in_deployment && /^metadata:/ {
+  print
+  print "  labels:"
+  print "    app: grafana"
+  print "    env: \"" env "\""
+  print "    service: \"" svc "\""
+  in_deployment = 0
+  next
+}
+
+$0 ~ /^ *template:/ {
+  in_pod = 1
+}
+
+in_pod && /^[[:space:]]+labels:/ {
+  print
+  match($0, /^[[:space:]]+/)
+  indent = substr($0, RSTART, RLENGTH)
+  print indent "  app: grafana"
+  print indent "  env: \"" env "\""
+  print indent "  service: \"" svc "\""
+  skip_app_label = 1
+  next
+}
+
+in_pod && /app: grafana/ && skip_app_label == 1 {
+  skip_app_label = 0
+  next
 }
 
 $0 ~ /kind:[[:space:]]*Service/ {
@@ -18,29 +60,26 @@ $0 ~ /kind:[[:space:]]*Service/ {
 }
 
 svc_metadata && /^metadata:/ {
-  print $0
+  print
   next
 }
 
 svc_metadata && /^  name:/ {
-  print $0
+  print
   print "  annotations:"
-  print "    cloud.google.com/neg: '\''{\"exposed_ports\": {\"80\": {\"name\": \"" neg "\"}}}'\''"
+  print "    cloud.google.com/neg: '\''{\"exposed_ports\": {\"80\": {\"name\": \"" prj "-" svc "-neg" "\"}}}'\''"
   svc_metadata = 0
   next
 }
 
-$template == 0 && /template:/ { in_pod = 1 }
-
 in_pod && /containers:/ {
-  print "      serviceAccountName: " svc "-svc"
+  print "      serviceAccountName: " prj "-gke-" svc "-svc"
   print "      securityContext:"
   print "        fsGroup: 472"
 }
 
-/containerPort: 3000/ {
+in_pod && /containerPort: 3000/ {
   print
-  #readinessProbe 추가
   print "        readinessProbe:"
   print "          failureThreshold: 3"
   print "          httpGet:"
@@ -49,7 +88,6 @@ in_pod && /containers:/ {
   print "            scheme: HTTP"
   print "          initialDelaySeconds: 20"
   print "          periodSeconds: 30"
-  #env 추가
   print "        env:"
   print "          - name: GF_METRICS_ENABLED"
   print "            value: \"true\""
@@ -59,29 +97,29 @@ in_pod && /containers:/ {
     print "          - name: GF_DATABASE_TYPE"
     print "            value: \"postgres\""
     print "          - name: GF_DATABASE_HOST"
-    print "            value: \"127.0.0.1:5432\""    
-    split("name,user,password", keys, ",")    
+    print "            value: \"127.0.0.1:5432\""
+    split("name,user,password", keys, ",")
     for (i = 1; i <= 3; i++) {
-    print "          - name: GF_DATABASE_" toupper(keys[i])
-    print "            valueFrom:"
-    print "              secretKeyRef:"
-    print "                name: " svc "-secret"
-    print "                key: " keys[i]
+      print "          - name: GF_DATABASE_" toupper(keys[i])
+      print "            valueFrom:"
+      print "              secretKeyRef:"
+      print "                name: " svc "-secret"
+      print "                key: " keys[i]
     }
   }
   print "        resources:"
   print "          requests:"
   print "            cpu: \"250m\""
-  print "            memory: \"768Mi\""
+  print "            memory: \"512Mi\""
+  print "            ephemeral-storage: \"256Mi\""
   print "          limits:"
   print "            cpu: \"500m\""
-  print "            memory: \"1Gi\""
-  #pv mount
+  print "            memory: \"768Mi\""
+  print "            ephemeral-storage: \"512Mi\""
   print "        volumeMounts:"
   print "          - mountPath: /var/lib/grafana"
-  print "            name: " svc "-pv"  
-  # cloud-sql-proxy sidecar(it needs)
-  if(use_sql) {
+  print "            name: " prj "-gke-" svc "-pv"
+  if (use_sql) {
     print "      - name: cloud-sql-proxy"
     print "        image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.15.3-alpine"
     print "        args:"
@@ -89,7 +127,7 @@ in_pod && /containers:/ {
     print "          - \"--auto-iam-authn\""
     print "          - \"--structured-logs\""
     print "          - \"--port=5432\""
-    print "          - \"" sql "\""
+    print "          - \"" prj ":" sql "\""
     print "        securityContext:"
     print "          runAsNonRoot: true"
     print "        resources:"
@@ -100,17 +138,17 @@ in_pod && /containers:/ {
     print "            cpu: \"200m\""
     print "            memory: \"256Mi\""
   }
-  #pvc claim
   print "      volumes:"
-  print "        - name: " svc "-pv"
+  print "        - name: " prj "-gke-" svc "-pv"
   print "          persistentVolumeClaim:"
-  print "            claimName: " svc "-pvc"
+  print "            claimName: " prj "-gke-" svc "-pvc"
   next
 }
-# Service
+
+# Service 스펙 및 PVC 생성
 in_svc && /^spec:/ {
   print "spec:"
-  print "  type: LoadBalancer"
+  print "  type: ClusterIP"
   print "  selector:"
   print "    app: grafana"
   print "  ports:"
@@ -120,11 +158,11 @@ in_svc && /^spec:/ {
   print "apiVersion: v1"
   print "kind: PersistentVolumeClaim"
   print "metadata:"
-  print "  name: " svc "-pvc"
+  print "  name: " prj "-gke-" svc "-pvc"
   print "spec:"
   print "  accessModes:"
   print "    - ReadWriteOnce"
-  print "  storageClassName: standard"
+  print "  storageClassName: standard-rwo"
   print "  resources:"
   print "    requests:"
   print "      storage: 1Gi"
@@ -135,5 +173,4 @@ in_svc && /^spec:/ {
 
 { print }
 ' | tee ${SVC_NAME}.yaml
-
 kubectl apply -n "${K8S_NAMESPACE}" -f ${SVC_NAME}.yaml
