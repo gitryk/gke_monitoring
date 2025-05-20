@@ -23,6 +23,12 @@ gcloud projects add-iam-policy-binding ${SVC_PROJECT} \
 gcloud projects add-iam-policy-binding ${SVC_PROJECT} \
   --member="serviceAccount:${SVC_PROJECT}-gke-${SVC_NAME}@${SVC_PROJECT}.iam.gserviceaccount.com" \
   --role="roles/iam.serviceAccountTokenCreator" #서비스 계정 토큰 생성자
+gcloud projects add-iam-policy-binding ${SVC_PROJECT} \
+  --member="serviceAccount:${SVC_PROJECT}-gke-${SVC_NAME}@${SVC_PROJECT}.iam.gserviceaccount.com" \
+  --role="roles/logging.viewer" #로그 뷰어
+gcloud projects add-iam-policy-binding ${SVC_PROJECT} \
+  --member="serviceAccount:${SVC_PROJECT}-gke-${SVC_NAME}@${SVC_PROJECT}.iam.gserviceaccount.com" \
+  --role="roles/logging.privateLogViewer"  #비공개 로그 뷰어(_Required 및 _Default 버킷의 모든 로그에 액세스하는 데 필요한 권한)
   
 #SQL 연결 필요시
 gcloud projects add-iam-policy-binding ${SVC_PROJECT} \
@@ -45,8 +51,7 @@ gcloud iam service-accounts add-iam-policy-binding ${SVC_PROJECT}-gke-${SVC_NAME
   --project=${SVC_PROJECT} \
   --role roles/iam.workloadIdentityUser \
   --member "serviceAccount:${SVC_PROJECT}.svc.id.goog[${K8S_NAMESPACE}/${SVC_PROJECT}-gke-${SVC_NAME}-svc]"
-
-
+    
 #만들어진 계정 확인(Debugging용)
 printf "Namespace [ %s ] Account List:\n" "${K8S_NAMESPACE}"
 kubectl get serviceaccounts -n ${K8S_NAMESPACE} | grep ${SVC_NAME}
