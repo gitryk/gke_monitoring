@@ -10,6 +10,26 @@ sed -e "s|\$DATASOURCE_UIDS|${DATASOURCE_UIDS}|g" \
     -e "s|\$PROJECT_ID|${SVC_PROJECT}|g" \
     -e "s|gke.gcr.io/prometheus-engine/datasource-syncer:[^ ]*|gke.gcr.io/prometheus-engine/datasource-syncer:${DATASYNC_VER}|" | \
 awk -v sa="${SVC_PROJECT}-gke-${SVC_NAME}" '
+  $0 ~ /^ *schedule:/ {
+    print gensub(/schedule:.*/, "schedule: \"*/30 * * * *\"", 1)
+    print "  failedJobsHistoryLimit: 1"
+    print "  successfulJobsHistoryLimit: 1"
+    next
+  }
+
+  $0 ~ /jobTemplate:/ {
+    in_jobtemplate = 1
+  }
+
+  in_jobtemplate && $0 ~ /^ *spec:/ {
+    indent = match($0, /spec:/)
+    space = substr($0, 1, indent - 1)
+    print $0
+    print space "  ttlSecondsAfterFinished: 60"
+    in_jobtemplate = 0
+    next
+  }
+
   $0 ~ /kind: Job/ {
     in_job = 1
     printed_sa = 0
@@ -20,7 +40,7 @@ awk -v sa="${SVC_PROJECT}-gke-${SVC_NAME}" '
     printed_sa = 0
   }
 
-  # 공통 serviceAccountName 삽입
+  # serviceAccountName 삽입
   (in_job || in_cron) && /containers:/ && !printed_sa {
     indent = match($0, /containers:/)
     space = substr($0, 1, indent - 1)
@@ -30,20 +50,22 @@ awk -v sa="${SVC_PROJECT}-gke-${SVC_NAME}" '
     next
   }
 
+  # resources 삽입
   $0 ~ /image: gke.gcr.io\/prometheus-engine\/datasource-syncer:/ {
     print
     indent = match($0, /image:/)
     space = substr($0, 1, indent - 1)
     print space "resources:"
     print space "  requests:"
-    print space "    cpu: \"10m\""
-    print space "    memory: \"64Mi\""
+    print space "    cpu: \"250m\""
+    print space "    memory: \"512Mi\""
     print space "  limits:"
-    print space "    cpu: \"100m\""
-    print space "    memory: \"128Mi\""
+    print space "    cpu: \"300m\""
+    print space "    memory: \"768Mi\""
     next
   }
 
   { print }
 ' | tee datasource-syncer.yaml
+
 kubectl apply -n "${K8S_NAMESPACE}" -f datasource-syncer.yaml
